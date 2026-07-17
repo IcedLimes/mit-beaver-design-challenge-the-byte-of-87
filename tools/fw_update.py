@@ -24,7 +24,6 @@ just a zero
 
 import argparse
 import struct
-import time
 import serial
 
 from util import *
@@ -35,9 +34,9 @@ FRAME_SIZE = 256
 
 
 def send_metadata(ser, metadata, debug=False):
-    assert(len(metadata) == 4)
-    version, size = struct.unpack('<HH', metadata)
-    print(f"Version: {version}\nSize: {size} bytes\n")
+    assert(len(metadata) == 98)
+    version, size, msg_len = struct.unpack('<HHH', metadata[:6])
+    print(f"Version: {version}\nSize: {size} bytes\nMessage: {msg_len} bytes\n")
 
     # Handshake for update
     ser.write(b"U")
@@ -67,8 +66,6 @@ def send_frame(ser, frame, debug=False):
 
     resp = ser.read(1)  # Wait for an OK from the bootloader
 
-    time.sleep(0.1)
-
     if resp != RESP_OK:
         raise RuntimeError("ERROR: Bootloader responded with {}".format(repr(resp)))
 
@@ -81,8 +78,8 @@ def update(ser, infile, debug):
     with open(infile, "rb") as fp:
         firmware_blob = fp.read()
 
-    metadata = firmware_blob[:4]
-    firmware = firmware_blob[4:]
+    metadata = firmware_blob[:98]
+    firmware = firmware_blob[98:]
 
     send_metadata(ser, metadata, debug=debug)
 
@@ -97,14 +94,12 @@ def update(ser, infile, debug):
 
     print("Done writing firmware.")
 
-    # Send a zero length payload to tell the bootlader to finish writing it's page.
-    ser.write(b'\x00\x00')
-    resp = ser.read(1)  # Wait for an OK from the bootloader
+    # The bootloader ends its loop on the header byte-count, then acks the tag and signature verdict.
+    resp = ser.read(1)
     if resp != RESP_OK:
-        raise RuntimeError("ERROR: Bootloader responded to zero length frame with {}".format(repr(resp)))
-    print(f"Wrote zero length frame (2 bytes)")
+        raise RuntimeError("ERROR: bootloader rejected the image: {}".format(repr(resp)))
 
-    return 
+    return
 
 
 if __name__ == "__main__":
