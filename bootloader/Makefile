@@ -19,12 +19,15 @@ CFLAGS+=-I${INC}
 
 CFLAGS+=-DWOLFSSL_USER_SETTINGS
 
+# Debug lock on by default; bl_build.py passes LOCK=0 for a dev board that keeps its port
+LOCK?=1
+CFLAGS+=-DLOCK=${LOCK}
+
 all: bootloader
 
 bootloader: driverlib
 bootloader: uart
-# Uncomment to compile wolfssl, must `git submodule update --init --recursive` first!
-#bootloader: wolfssl
+bootloader: wolfssl
 
 driverlib:
 	make -C ${LIB}/driverlib
@@ -43,9 +46,10 @@ WOLFSSL_MAKE_ARGS=TOOLCHAIN=$(TOOLCHAIN) \
 			 	  ARCHFLAGS=$(ARCHFLAGS) \
 				  NO_EXAMPLES=$(NO_EXAMPLES) \
 				  FIPS=$(FIPS)
+# Top level, not inside the recipe: a recipe-local assignment never reaches the link line
+WOLFSSL_ARCHIVE=${WOLFSSL}/IDE/GCC-ARM/Build/libwolfssl.a
 wolfssl:
-	make -C ${WOLFSSL}/IDE/GCC-ARM $(WOLFSSL_MAKE_ARGS)
-	WOLFSSL_ARCHIVE=${WOLFSSL}/IDE/GCC-ARM/Build/libwolfssl.a
+	make -C ${WOLFSSL}/IDE/GCC-ARM WolfSSLStaticLib $(WOLFSSL_MAKE_ARGS)
 
 bootloader: src/bootloader.o
 bootloader: src/startup_gcc.o
