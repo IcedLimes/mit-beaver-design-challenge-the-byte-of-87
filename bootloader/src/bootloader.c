@@ -81,6 +81,18 @@ static uint32_t *min_ver_slot(void) {
     return p; // first free word
 }
 
+// re-read the floor from flash on every call; noinline + volatile so no single held
+// register feeds all the version gates, else one value-fault on it rolls back
+__attribute__((noinline)) static uint16_t cur_floor(void) {
+    volatile uint32_t *p = (volatile uint32_t *)MIN_VER_BASE;
+    uint16_t v = 1;
+    while (p < (volatile uint32_t *)METADATA_BASE && *p != 0xFFFFFFFF) {
+        v = (uint16_t)*p;
+        p++;
+    }
+    return v;
+}
+
 
 int main(void) {
 
@@ -130,17 +142,13 @@ void load_firmware(void) {
     uint16_t msg_len = hdr[4] | (hdr[5] << 8);
     uint32_t total = size + msg_len;
 
-    uint32_t *slot = min_ver_slot();
-    uint16_t min_ver = 1; // fresh device floors at 1
-    if (slot != (uint32_t *)MIN_VER_BASE) {
-        min_ver = (uint16_t)slot[-1];
-    }
+    uint32_t *slot = min_ver_slot(); // free slot for the ratchet bump
 
     // unauth here bounds only tag is the gate
     if (size == 0 || size > MAX_FW_SIZE || msg_len == 0 || msg_len > MAX_MSG_LEN) {
         reject();
     }
-    if (ver != 0 && ver < min_ver) { // 0 = debug
+    if (ver != 0 && ver < cur_floor()) { // 0 = debug
         reject();
     }
 
@@ -185,15 +193,15 @@ void load_firmware(void) {
     for (uint32_t i = 0; i < 16; i++) {
         diff |= tag[i] ^ hdr[18 + i]; // no early out 16 bytes resist one fault
     }
-    if (ver != 0 && ver < min_ver) { diff |= 1; } // version verdict
-    if (sigok != 1)                { diff |= 2; } // signature verdict
+    if (ver != 0 && ver < cur_floor()) { diff |= 1; } // version verdict, floor re-read
+    if (sigok != 1)                    { diff |= 2; } // signature verdict
     // second fold separated so each verdict costs two skips
-    if (ver != 0 && ver < min_ver) { diff |= 1; }
-    if (sigok != 1)                { diff |= 2; }
+    if (ver != 0 && ver < cur_floor()) { diff |= 1; }
+    if (sigok != 1)                    { diff |= 2; }
     uint32_t magic = BOOT_MAGIC ^ diff; // bad verdict makes a magic boot refuses
 
     // ratchet before record a cut raises floor with nothing installed
-    if (diff == 0 && ver > min_ver && slot < (uint32_t *)METADATA_BASE) {
+    if (diff == 0 && ver > cur_floor() && slot < (uint32_t *)METADATA_BASE) {
         uint32_t w = ver;
         FlashProgram(&w, (uint32_t)slot, 4); // not program_flash it erases
     }
@@ -260,10 +268,10 @@ void boot_firmware(void) {
 
     // fold magic+bounds twice erased page fails
     // gate print and jump a skipped branch cannot leak flash
-    uint32_t bad = *(uint32_t *)(METADATA_BASE + 8) ^ BOOT_MAGIC;
+    uint32_t bad = *(volatile uint32_t *)(METADATA_BASE + 8) ^ BOOT_MAGIC;
     if (size > MAX_FW_SIZE)    { bad |= 0x10000; }
     if (msg_len > MAX_MSG_LEN) { bad |= 0x20000; }
-    bad |= *(uint32_t *)(METADATA_BASE + 8) ^ BOOT_MAGIC;
+    bad |= *(volatile uint32_t *)(METADATA_BASE + 8) ^ BOOT_MAGIC; // volatile: keep both reads
 
     if (bad) {
         uart_write_str(UART0, "No firmware loaded. Please RESET device.\n");
