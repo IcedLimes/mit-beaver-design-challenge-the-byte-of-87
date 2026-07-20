@@ -43,14 +43,14 @@ void boot_firmware(void);
 #define FLASH_WRITESIZE 4
 
 // Device metadata
-uint16_t * fw_size_address = (uint16_t *)(METADATA_BASE + 2);
+uint16_t * fw_size_address = (uint16_t *)(METADATA_BASE + 2); // record+2; boot reads size here
 
 // public keys from bl_build
-static const uint8_t fw_key[] = FW_KEY;
-static const uint8_t ed_pub[] = ED25519_PUB;
+static const uint8_t fw_key[] = FW_KEY;  // symmetric, must stay on-chip only
+static const uint8_t ed_pub[] = ED25519_PUB; // verify half; private seed never leaves factory
 
 // Firmware Buffer
-unsigned char data[FLASH_PAGESIZE];
+unsigned char data[FLASH_PAGESIZE]; // one-page staging, decrypt in place
 
 
 static void reject(void) {
@@ -127,20 +127,20 @@ int main(void) {
  * Load the firmware into flash.
  */
 void load_firmware(void) {
-    int read, sigok = 0;
+    int read, sigok = 0; // sigok 0 = fail closed
     uint8_t hdr[HDR_LEN], tag[16], rec[REC_LEN] __attribute__((aligned(4))); // word aligned
     ChaChaPoly_Aead aead;
     ed25519_key ekey;
-    uint32_t page = FW_BASE, idx = 0, got = 0, diff = 0;
+    uint32_t page = FW_BASE, idx = 0, got = 0, diff = 0; // page ptr, buf idx, bytes got, verdict
 
-    for (uint32_t i = 0; i < HDR_LEN; i++) {
+    for (uint32_t i = 0; i < HDR_LEN; i++) { // header is a fixed 98 bytes
         hdr[i] = uart_read(UART0, BLOCKING, &read);
     }
 
-    uint16_t ver = hdr[0] | (hdr[1] << 8);
+    uint16_t ver = hdr[0] | (hdr[1] << 8); // little endian, attacker-supplied until the tag
     uint16_t size = hdr[2] | (hdr[3] << 8);
     uint16_t msg_len = hdr[4] | (hdr[5] << 8);
-    uint32_t total = size + msg_len;
+    uint32_t total = size + msg_len; // bytes to stream: firmware then message
 
     uint32_t *slot = min_ver_slot(); // free slot for the ratchet bump
 
@@ -152,25 +152,25 @@ void load_firmware(void) {
         reject();
     }
 
-    wc_ChaCha20Poly1305_Init(&aead, fw_key, hdr + 6, CHACHA20_POLY1305_AEAD_DECRYPT);
+    wc_ChaCha20Poly1305_Init(&aead, fw_key, hdr + 6, CHACHA20_POLY1305_AEAD_DECRYPT); // nonce = hdr+6
     wc_ChaCha20Poly1305_UpdateAad(&aead, hdr, 6); // aad relabel breaks tag
 
     wc_ed25519_init(&ekey);
-    wc_ed25519_import_public(ed_pub, ED25519_PUB_KEY_SIZE, &ekey);
+    wc_ed25519_import_public(ed_pub, ED25519_PUB_KEY_SIZE, &ekey); // backstops a leaked fw_key
     wc_ed25519_verify_msg_init(hdr + SIG_OFF, ED25519_SIG_SIZE, &ekey, (byte)Ed25519, NULL, 0);
-    wc_ed25519_verify_msg_update(hdr, SIG_OFF, &ekey); // signed prefix
+    wc_ed25519_verify_msg_update(hdr, SIG_OFF, &ekey); // signed prefix: aad+nonce+tag
 
     FlashErase(METADATA_BASE); // no bootable image until commit
     uart_write(UART0, OK);
 
     while (got < total) {
-        uint32_t n = (uint32_t)uart_read(UART0, BLOCKING, &read) << 8;
+        uint32_t n = (uint32_t)uart_read(UART0, BLOCKING, &read) << 8; // frame len, big endian
         n |= uart_read(UART0, BLOCKING, &read);
 
         if (n == 0 || got + n > total || idx + n > FLASH_PAGESIZE) { // page buffer bound
             reject();
         }
-        for (uint32_t i = 0; i < n; i++) {
+        for (uint32_t i = 0; i < n; i++) { // fill the page buffer
             data[idx + i] = uart_read(UART0, BLOCKING, &read);
         }
         wc_ed25519_verify_msg_update(data + idx, n, &ekey); // sig over ct before decrypt
@@ -188,8 +188,8 @@ void load_firmware(void) {
         uart_write(UART0, OK);
     }
 
-    wc_ChaCha20Poly1305_Final(&aead, tag);
-    wc_ed25519_verify_msg_final(hdr + SIG_OFF, ED25519_SIG_SIZE, &sigok, &ekey);
+    wc_ChaCha20Poly1305_Final(&aead, tag); // tag computed over the stream
+    wc_ed25519_verify_msg_final(hdr + SIG_OFF, ED25519_SIG_SIZE, &sigok, &ekey); // sigok 1 = valid
     for (uint32_t i = 0; i < 16; i++) {
         diff |= tag[i] ^ hdr[18 + i]; // no early out 16 bytes resist one fault
     }
@@ -206,7 +206,7 @@ void load_firmware(void) {
         FlashProgram(&w, (uint32_t)slot, 4); // not program_flash it erases
     }
 
-    memcpy(rec, hdr, 6);
+    memcpy(rec, hdr, 6); // record = ver, size, msg_len
     memcpy(rec + 8, &magic, 4); // pad aligns magic to last word
     program_flash((uint8_t *)METADATA_BASE, rec, REC_LEN); // magic last torn write stays 0xffffffff
 
@@ -263,7 +263,7 @@ long program_flash(void* page_addr, unsigned char * data, unsigned int data_len)
 }
 
 void boot_firmware(void) {
-    uint16_t size = *fw_size_address;
+    uint16_t size = *fw_size_address; // from the committed record
     uint16_t msg_len = *(uint16_t *)(METADATA_BASE + 4);
 
     // fold magic+bounds twice erased page fails
@@ -284,6 +284,6 @@ void boot_firmware(void) {
     }
 
     if (bad) { while (1) { } } // recheck before jump
-    __asm("LDR R0,=0x10001\n\t"
+    __asm("LDR R0,=0x10001\n\t"  // 0x10001 = FW_BASE + thumb bit
           "BX R0\n\t");
 }
