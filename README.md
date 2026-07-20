@@ -4,167 +4,145 @@
 
 This repository hardens CrASHBoot for the 2026 BWSI eCTF. The update path uses ChaCha20-Poly1305 with an Ed25519 signature over the header and ciphertext, a monotone `min_ver` ratchet blocks rollback, and the boot record commits through a derived magic rather than a branch. The debug port locks at first boot so a flash dump returns nothing.
 
-Installation and development guide for the most secure (TM) automotive bootloader on the planet! We guarentee that cars running our software will be unhackable (provided hacking is not attempted). Of all the automotive bootloaders, this is certainly one of them. Read on and tremble at our embedded security skillz.
+Below is the installation and development guide for the most secure (TM) automotive bootloader on the planet! We guarentee that cars running our software will be unhackable (provided hacking is not attempted). Of all the automotive bootloaders, this is certainly one of the ones of all time. Read on.. and shiver your timbers at our mad embedded security skillz.
 
 ### Internal Notes
 
+Letter
 ```
-//TODO: Make the design secure
-//TODO: Hire interns
-//TODO: Delete TODOs before publishing
-```
-
 I find myself trapped in the labyrinthine depths of my company, shackled by an unending torrent of menial tasks. My desk has become my prison, my workload, my jailer. I am buried under a mountain of code, my skills squandered on trivialities while critical applications do not get the attention they deserve. In a desperate attempt to keep up with the workload, I've had to rapidly create a functional, yet insecure, product. It's a risky move, one that fills me with dread. I haven't had the time to implement the necessary security goals of confidentiality, integrity, and authentication. If you are reading this: I implore you, proceed with caution. **Do not release this software.** It is potentially riddled with vulnerabilities and exposed to the most basic types of attacks. 
 
 Please, send help. I need to escape this relentless cycle. I need a team of talented interns to tackle this challenge. Otherwise, I fear the worst.
+```
 
-### External Notes
-
-Ship it!
+Do not worry, poor employee. Your call for help has reached thee! Fear not your bugs, nor dread the deploy, us interns come, to code your buoy!
 
 # Project Structure
 ```
-├── bootloader *
+├── bootloader
 │   ├── bin
-│   │   ├── bootloader.bin
-│   ├── src
-│   │   ├── bootloader.c
-│   │   ├── startup_gcc.c
 │   ├── bootloader.ld
+│   ├── inc
+│   │   ├── bootloader.h
+│   │   └── user_settings.h
 │   ├── Makefile
+│   └── src
+│       ├── bootloader.c
+│       └── startup_gcc.c
 ├── firmware
 │   ├── bin
-│   │   ├── firmware.bin
-│   ├── lib
-│   ├── src
-├── lib
-│   ├── driverlib
-│   ├── inc
-│   ├── uart
-├── tools *
-│   ├── bl_build.py
-│   ├── fw_protect.py
-│   ├── fw_update.py
-│   ├── util.py
+│   ├── firmware.ld
+│   ├── Makefile
+│   └── src
+│       └── firmware.c
+├── makedefs
 ├── README.md
-
-Directories marked with * are part of the CrASHBoot system
+├── tests
+│   ├── emu
+│   │   ├── drive_update.py
+│   │   ├── emu.py
+│   │   └── fault_rollback.py
+│   ├── test_emu_budget.py
+│   └── test_host_tools.py
+└── tools
+    ├── __init__.py
+    ├── bl_build.py
+    ├── fw_protect.py
+    ├── fw_update.py
+    └── util.py
 ```
 
-## Bootloader
+(obtained via `tree --gitignore -I lib`)
 
-The `bootloader` directory contains source code that is compiled and loaded onto the TM4C microcontroller. The bootloader manages which firmware can be updated to the TM4C. When connected to the fw_update tool, the bootloader checks the version of the new firmware against the internal firmware version before accepting the new firmware.
+# Prerequisites
 
-The bootloader will also start the execution of the loaded vehicle firmware.
+- `arm-none-eabi-gcc` toolchain
+- `lm4flash` to flash, `openocd` to debug and to recover a locked board
+- a venv at `tools/.venv`: `pip install pycryptodome pyserial unicorn`
+- wolfSSL as a submodule: `git submodule update --init --recursive`
 
-## Tools
+The wolfssl target is already enabled in `bootloader/Makefile`. `user_settings.h` under `bootloader/inc` configures which primitives build in; leave it alone without a specific reason to change it.
 
-There are three python scripts in the `tools` directory which are used to:
-
-1. Provision the bootloader (`bl_build.py`)
-2. Package the firmware (`fw_protect.py`)
-3. Update the firmware to a TM4C with a provisioned bootloader (`fw_update.py`)
-
-### bl_build.py
-
-This script calls `make` in the `bootloader` directory.
-
-### fw_protect.py
-
-This script bundles the version and release message with the firmware binary.
-
-### fw_update.py
-
-This script opens a serial channel with the bootloader, then writes the firmware metadata and binary broken into data frames to the bootloader.
-
-# Building and Flashing the Bootloader
-
-1. Enter the `tools` directory and run `bl_build.py`
+# Build and Flash
 
 ```
-cd ./tools
+cd tools
 python bl_build.py
+lm4flash ../bootloader/bin/bootloader.bin
 ```
 
-2. Flash the bootloader using `lm4flash` tool
-   
-```
-sudo lm4flash ../bootloader/bin/bootloader.bin
-```
+Every run of `bl_build.py` generates a fresh key pair and writes `bootloader/inc/secrets.h` plus `tools/secret_build_output.txt`. Neither is tracked in git; both are needed by `fw_protect.py`, so keep them.
 
-## Using WolfSSL
-
-In order to use the WolfSSL cryptographic functionality, you will need to first clone the WolfSSL repository. This repository contains WolfSSL as a submodule:
-
-Run to clone wolfssl to ./lib
-```
-git submodule update --init --recursive
-```
-
-The wolfssl build target is already enabled in the ./bootloader/Makefile, so no manual edit is needed once the submodule is populated.
-
-A sample `user_settings.h` is available in the ./bootloader/inc directory. This will allow you to configure the library to suit your project needs.
-
-# Bundling and Updating Firmware
-
-1. Enter the firmware directory and `make` the example firmware. You will not have to design a firmware for this challenge, teams will be provided with firmwares built by the instructors during the attack phase. The `firmware` directory contains an example firmware.
+The default build locks the debug port. A dev build that keeps the port open:
 
 ```
-cd ../firmware
-make
+ECTF_LOCK=0 python bl_build.py
 ```
 
-2. Enter the tools directory and run `fw_protect.py`
+## The lock is not instant
+
+Locking commits a value to `BOOTCFG`. The chip evaluates that register only at the next power-on reset, so a freshly-locked board keeps dumping over SWD until you unplug and replug it. Schedule that power cycle deliberately.
+
+Locked out, intentionally or not? Recover:
 
 ```
+openocd -f board/ti_ek-tm4c123gxl.cfg -c "init; halt; stellaris recover; exit"
+```
+
+Power-cycle the board, then reflash from scratch. This mass-erases the whole chip; nothing on it survives, flags included. `stellaris mass_erase 0` does the same erase without needing a locked chip, useful for a clean slate mid-development.
+
+# Protect and Update Firmware
+
+```
+cd ../firmware && make
 cd ../tools
-python fw_protect.py --infile ../firmware/bin/firmware.bin --outfile firmware_protected.bin --version 2 --message "Firmware V2"
+python fw_protect.py --infile ../firmware/bin/firmware.bin --outfile fw.bin --version 2 --message "hello"
+python fw_update.py --firmware fw.bin --port /dev/tty.usbmodemXXXX
 ```
 
-This creates a firmware bundle called `firmware_protected.bin` in the tools directory.
+Version 0 always installs and leaves the minimum version unchanged. Every other version must be at or above the last one the board accepted. A rejected update resets the board back into the bootloader automatically. Only a successful **B**oot needs a physical RESET, since firmware has no path back to the bootloader.
 
-3. Reset the TM4C by pressig the RESET button
-
-4. Run `fw_update.py`
-
-```
-python fw_update.py --firmware ./firmware_protected.bin --port <Path to your Tiva (/dev/ttyACM0, /dev/tty.usb...)> --debug
-```
-
-If the firmware bundle is accepted by the bootloader, the `fw_update.py` tool will report it wrote all frames successfully.
-
-Additional firmwares can be updated by repeating steps 3 and 4, but only firmware versions higher than the one flashed to the board (or version 0) will be accepted.
+Commit takes several seconds on the stock 16MHz clock, the Ed25519 verify running at that speed. Wait for the final ack before assuming failure.
 
 # Interacting with the Bootloader
 
-Using `pyserial` module:
-
 ```
-python -m serial.tools.miniterm /dev/ttyACM0 115200
+python -m serial.tools.miniterm /dev/tty.usbmodemXXXX 115200
 ```
 
-You can now interact with the bootloader and firmware! Type 'B' to boot.
+`U` updates, `B` boots. `Ctrl-]` exits miniterm, `Ctrl-A X` exits picocom.
 
-Exit miniterm: `Ctrl-]`
-Exit picocom: `Ctrl-A X`
+# Tests
 
-# Launching the Debugger
-Use OpenOCD with the configuration files for the board to get it into debug mode and open GDB server ports:
+```
+python -m unittest discover -s tests
+```
+
+Wire-contract tests need only pycryptodome. Emulator tests run the compiled `bootloader.bin` under Unicorn; build first. `tests/emu/fault_rollback.py` injects a value fault on the minimum-version read and checks that a single fault still cannot roll a version back. Run it directly to see what it does:
+
+```
+python tests/emu/drive_update.py
+python tests/emu/fault_rollback.py
+```
+
+`.github/workflows/ci.yml` runs the build and all of the above on every push.
+
+# Debugging
+
+Needs an unlocked board. A locked one has no SWD to attach to, by design.
+
 ```bash
-openocd -f /usr/share/openocd/scripts/interface/ti-icdi.cfg -f /usr/share/openocd/scripts/board/ti_ek-tm4c123gxl.cfg
-```
-
-Start GDB and connect to the main OpenOCD debug port:
-```bash
+openocd -f board/ti_ek-tm4c123gxl.cfg
 gdb-multiarch -ex "target extended-remote localhost:3333" bootloader/bin/bootloader.axf
 ```
 
-Go to `main` function and set a breakpoint
 ```
 layout src
 list main
-break bootloader.c:50
+break bootloader.c:97
 ```
 
 Copyright 2024 The MITRE Corporation. ALL RIGHTS RESERVED <br>
 Approved for public release. Distribution unlimited 23-02181-25.
+
+Portions modified by The Byte of 87 Design Team, 2026
