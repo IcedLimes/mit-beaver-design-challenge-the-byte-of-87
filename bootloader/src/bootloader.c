@@ -101,12 +101,12 @@ int main(void) {
 #endif
 
     initialize_uarts(UART0);
-
+    // prompt the user
     uart_write_str(UART0, "Welcome to the BWSI Vehicle Update Service!\n");
     uart_write_str(UART0, "Send \"U\" to update, and \"B\" to run the firmware.\n");
 
     int resp;
-    while (1) {
+    while (1) { // read UART for instructions
         uint32_t instruction = uart_read(UART0, BLOCKING, &resp);
 
         if (instruction == UPDATE) {
